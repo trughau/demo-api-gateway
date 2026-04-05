@@ -1,0 +1,38 @@
+{
+  "name": "demo-api-gateway",
+  "version": "1.0.0",
+  "description": "API Gateway Demo with OpenTelemetry + Jaeger tracing",
+  "private": true,
+  "scripts": {
+    "docker:up": "docker-compose up --build",
+    "docker:down": "docker-compose down -v",
+    "kill:ports": "npx kill-port 3000 3001 3002 50051 16686",
+    "docker:clean-up": "npm run kill:ports  && docker-compose down -v && docker-compose up --build",
+    "docker:logs": "docker-compose logs -f",
+    "dev": "concurrently --no-color -n user,product,order,gateway \"node user-service/index.js\" \"node product-service/index.js\" \"node order-service/index.js\" \"node gateway/index.js\"",
+    "start:gateway": "node gateway/index.js",
+    "start:user": "node user-service/index.js",
+    "start:product": "node product-service/index.js",
+    "start:order": "node order-service/index.js"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.10.0",
+    "@grpc/proto-loader": "^0.7.10",
+    "@opentelemetry/api": "^1.7.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.48.0",
+    "@opentelemetry/instrumentation-express": "^0.36.0",
+    "@opentelemetry/instrumentation-grpc": "^0.48.0",
+    "@opentelemetry/instrumentation-http": "^0.48.0",
+    "@opentelemetry/resources": "^1.21.0",
+    "@opentelemetry/sdk-node": "^0.48.0",
+    "@opentelemetry/sdk-trace-node": "^1.21.0",
+    "@opentelemetry/semantic-conventions": "^1.21.0",
+    "axios": "^1.6.0",
+    "express": "^4.18.2",
+    "express-rate-limit": "^8.3.1",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

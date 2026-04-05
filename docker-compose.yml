@@ -1,0 +1,128 @@
+version: '3.8'
+
+services:
+  # ─────────────────────────────────────────
+  # 🔍 Jaeger - Distributed Tracing UI
+  # ─────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - LOG_LEVEL=warn
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - tracing-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─────────────────────────────────────────
+  # 👤 User Service (REST - Port 3001)
+  # ─────────────────────────────────────────
+  user-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: user-service
+    container_name: user-service
+    environment:
+      - PORT=3001
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+    ports:
+      - "3001:3001"
+    networks:
+      - tracing-net
+    depends_on:
+      jaeger:
+        condition: service_healthy
+  user-service-2: # Thêm instance thứ 2
+    build:
+      context: .
+      args:
+        SERVICE: user-service
+    container_name: user-service-2
+    environment:
+      - PORT=3001 # Bên trong container vẫn dùng port 3001
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+    networks:
+      - tracing-net
+  # ─────────────────────────────────────────
+  # 📦 Product Service (gRPC - Port 50051)
+  # ─────────────────────────────────────────
+  product-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: product-service
+    container_name: product-service
+    environment:
+      - GRPC_PORT=50051
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+    ports:
+      - "50051:50051"
+    networks:
+      - tracing-net
+    depends_on:
+      jaeger:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────
+  # 🛒 Order Service (REST - Port 3002)
+  # ─────────────────────────────────────────
+  order-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: order-service
+    container_name: order-service
+    environment:
+      - PORT=3002
+      - USER_SERVICE_URL=http://user-service:3001
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+    ports:
+      - "3002:3002"
+    networks:
+      - tracing-net
+    depends_on:
+      jaeger:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────
+  # 🚪 API Gateway (Port 3000)
+  # ─────────────────────────────────────────
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gateway
+    container_name: api-gateway
+    environment:
+      - PORT=3000
+      - USER_SERVICE_URL=http://user-service:3001
+      - USER_SERVICE_URL_2=http://user-service-2:3001 # Trỏ đến instance 2
+      - ORDER_SERVICE_URL=http://order-service:3002
+      - PRODUCT_SERVICE_HOST=product-service
+      - PRODUCT_SERVICE_PORT=50051
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+    ports:
+      - "3000:3000"
+    networks:
+      - tracing-net
+    depends_on:
+      - user-service
+      - product-service
+      - order-service
+
+networks:
+  tracing-net:
+    driver: bridge

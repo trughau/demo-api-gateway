@@ -1,0 +1,55 @@
+npm run docker:clean-up
+
+# 1. Dừng và xóa toàn bộ container, network trong file compose
+docker-compose down -v
+
+# 2. Build lại docker
+docker-compose up --build
+
+Lệnh tích hợp: kill port, docker up, docker down
+npm run docker:clean-up
+
+================================================== demo
+
+1: ĐIỀU PHỐI LƯU LƯỢNG (ROUTING & LOAD BALANCING)
+
+#gọi 2 lần và Nhìn vào Log của Gateway, bạn sẽ thấy [LB] Điều hướng tới Instance: ...:3001 và sau đó là :3011.
+
+curl -H "Authorization: Bearer secret-token" http://localhost:3000/api/users
+
+2: TỐI ƯU HIỆU NĂNG (IN-MEMORY CACHING)
+
+curl -w "\nTime: %{time_total}s\n" -H "Authorization: Bearer secret-token" "http://localhost:3000/api/products?page=1"
+
+3. test rate limit (lấy danh sách quá 5 lần trong 10s)
+curl -H "Authorization: Bearer secret-token" http://localhost:3000/api/users
+
+4. Kịch bản: Mua hàng THÀNH CÔNG (Full Flow)
+Kịch bản này dùng để show luồng chạy hoàn hảo qua 4 service.
+
+Mục tiêu: Jaeger hiện màu xanh toàn bộ, thấy được gRPC (Product) và REST (User, Order).
+
+curl -X POST http://localhost:3000/api/checkout ^
+  -H "Authorization: Bearer secret-token" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"userId\":\"user-001\",\"cartItems\":[{\"productId\":\"prod-001\",\"quantity\":1}],\"shippingAddress\":\"Hanoi\",\"paymentMethod\":\"COD\"}"
+
+5. Kịch bản: Bảo mật tối ưu (Chặn tại Gateway)
+Mục tiêu: Show khả năng bảo vệ của Gateway. Jaeger chỉ hiện 1 Span đỏ duy nhất.
+
+Giải thích: "Hệ thống phát hiện token sai ngay tại cửa ngõ, không cho phép request lọt vào bên trong."
+
+curl -i -X POST http://localhost:3000/api/checkout ^
+  -H "x-auth-mode: gateway" ^
+  -H "Authorization: Bearer token-fake" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"userId\":\"user-001\",\"cartItems\":[{\"productId\":\"prod-001\",\"quantity\":1}]}"
+
+6. Kịch bản: Bảo mật phân tán (Chặn sâu tại Service)
+Mục tiêu: Show request đi xuyên qua Gateway (Xanh) nhưng bị User Service chặn (Đỏ).
+
+	curl -i -X POST http://localhost:3000/api/checkout ^
+  -H "x-auth-mode: service" ^
+  -H "Authorization: Bearer token-fake" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"userId\":\"user-001\",\"cartItems\":[{\"productId\":\"prod-001\",\"quantity\":1}]}"

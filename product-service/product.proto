@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package product;
+
+// ─────────────────────────────────────────
+// Product Service - gRPC Definition
+// ─────────────────────────────────────────
+
+service ProductService {
+  // Lấy danh sách tất cả sản phẩm
+  rpc ListProducts (ListProductsRequest) returns (ListProductsResponse);
+
+  // Lấy thông tin một sản phẩm theo ID
+  rpc GetProduct (GetProductRequest) returns (Product);
+
+  // Kiểm tra tồn kho
+  rpc CheckStock (CheckStockRequest) returns (CheckStockResponse);
+}
+
+// ─── Messages ───────────────────────────
+
+message ListProductsRequest {
+  int32 page     = 1;
+  int32 pageSize = 2;
+  string category = 3; // optional filter
+}
+
+message ListProductsResponse {
+  repeated Product products = 1;
+  int32 total               = 2;
+}
+
+message GetProductRequest {
+  string productId = 1;
+}
+
+message CheckStockRequest {
+  string productId = 1;
+  int32  quantity  = 2;
+}
+
+message CheckStockResponse {
+  bool   available     = 1;
+  int32  stockQuantity = 2;
+  string message       = 3;
+}
+
+message Product {
+  string productId    = 1;
+  string name         = 2;
+  string description  = 3;
+  double price        = 4;
+  string category     = 5;
+  int32  stock        = 6;
+  string imageUrl     = 7;
+}
