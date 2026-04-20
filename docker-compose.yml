@@ -113,6 +113,7 @@ services:
       - ORDER_SERVICE_URL=http://order-service:3002
       - PRODUCT_SERVICE_HOST=product-service
       - PRODUCT_SERVICE_PORT=50051
+      - REDIS_URL=redis://redis:6379
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
     ports:
       - "3000:3000"
@@ -122,6 +123,18 @@ services:
       - user-service
       - product-service
       - order-service
+      - redis
+
+  # ─────────────────────────────────────────
+  # 🧠 Redis (Distributed Cache)
+  # ─────────────────────────────────────────
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - tracing-net
 
 networks:
   tracing-net:

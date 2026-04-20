@@ -6,6 +6,7 @@ require('../tracing').initTracing('api-gateway');
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
+const Redis = require('ioredis');
 const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
 const { trace, SpanStatusCode, context, propagation } = require('@opentelemetry/api');
@@ -27,15 +28,25 @@ const CONFIG = {
   orderService:   process.env.ORDER_SERVICE_URL    || 'http://localhost:3002',
   productHost:    process.env.PRODUCT_SERVICE_HOST || 'localhost',
   productPort:    process.env.PRODUCT_SERVICE_PORT || '50051',
-  cacheTTL:       60 * 1000 // 1 phút cho In-memory Cache
+  redisUrl:       process.env.REDIS_URL            || 'redis://localhost:6379',
+  cacheTTLSeconds: 60 // 1 phút cho Redis cache
 };
 
 const tracer = trace.getTracer('api-gateway');
 
 // ─────────────────────────────────────────────────────────────────
-// 2. IN-MEMORY CACHE & LOAD BALANCING STATE
+// 2. REDIS CACHE & LOAD BALANCING STATE
 // ─────────────────────────────────────────────────────────────────
-const apiCache = new Map(); // Lưu trữ: key -> { data, timestamp }
+const redis = new Redis(CONFIG.redisUrl, {
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+});
+
+// Cơ chế chịu lỗi: Redis lỗi thì chỉ log, gateway vẫn tiếp tục phục vụ bằng gRPC trực tiếp.
+redis.on('error', (err) => {
+  console.error('[Redis] Kết nối/cache lỗi, chuyển sang fallback không cache:', err.message);
+});
+
 let userServerIndex = 0;    // Con trỏ phục vụ Round Robin
 
 /**
@@ -166,30 +177,63 @@ app.get('/api/users', async (req, res) => {
   });
 });
 
-// --- 5.2. PRODUCT PROXY (Minh họa: In-memory Caching & gRPC) ---
+// --- 5.2. PRODUCT PROXY (Minh họa: Redis Cache-Aside & gRPC) ---
 app.get('/api/products', async (req, res) => {
-  // Tạo Cache Key dựa trên Query Params
   const cacheKey = `prod_${req.query.page || 1}_${req.query.pageSize || 10}`;
-  const cached = apiCache.get(cacheKey);
-
-  // Kiểm tra nếu dữ liệu còn hạn trong Cache
-  if (cached && (Date.now() - cached.timestamp < CONFIG.cacheTTL)) {
-    console.log(`[Cache] Trả về dữ liệu từ bộ nhớ cho key: ${cacheKey}`);
-    return res.json(cached.data);
-  }
-
   const span = tracer.startSpan('gateway.listProducts');
+
   context.with(trace.setSpan(context.active(), span), async () => {
     try {
+      // Cache-Aside (Bước 1): đọc cache từ Redis trước, có trace để quan sát trên Jaeger.
+      let cachedRaw = null;
+      const redisGetSpan = tracer.startSpan('gateway.redis.get');
+      try {
+        redisGetSpan.addEvent('redis.get.start', { cacheKey });
+        cachedRaw = await redis.get(cacheKey);
+        redisGetSpan.addEvent('redis.get.end', { cacheHit: Boolean(cachedRaw) });
+      } catch (redisErr) {
+        // Fallback chịu lỗi: Redis hỏng thì bỏ qua cache, không làm fail request.
+        redisGetSpan.recordException(redisErr);
+        redisGetSpan.setStatus({ code: SpanStatusCode.ERROR, message: redisErr.message });
+        span.addEvent('redis.get.fallback', { reason: redisErr.message });
+      } finally {
+        redisGetSpan.end();
+      }
+
+      if (cachedRaw) {
+        try {
+          console.log(`[Cache] Trả về dữ liệu từ Redis cho key: ${cacheKey}`);
+          span.setStatus({ code: SpanStatusCode.OK });
+          span.end();
+          return res.json(JSON.parse(cachedRaw));
+        } catch (parseErr) {
+          // Fallback chịu lỗi: dữ liệu cache hỏng thì bỏ cache và tiếp tục gọi gRPC.
+          span.addEvent('redis.cache_corrupted', { cacheKey, reason: parseErr.message });
+        }
+      }
+
       const token = req.headers['authorization'];
       const grpcResponse = await grpcCall('listProducts', {
         page: parseInt(req.query.page || '1'),
         pageSize: parseInt(req.query.pageSize || '10'),
       }, token);
 
-      // Lưu kết quả vào Cache trước khi trả khách
-      apiCache.set(cacheKey, { data: grpcResponse, timestamp: Date.now() });
+      // Cache-Aside (Bước 2): ghi cache sau khi lấy dữ liệu từ service gốc.
+      const redisSetSpan = tracer.startSpan('gateway.redis.setex');
+      try {
+        redisSetSpan.addEvent('redis.setex.start', { cacheKey, ttlSeconds: CONFIG.cacheTTLSeconds });
+        await redis.setex(cacheKey, CONFIG.cacheTTLSeconds, JSON.stringify(grpcResponse));
+        redisSetSpan.addEvent('redis.setex.end');
+      } catch (redisErr) {
+        // Fallback chịu lỗi: ghi cache thất bại thì vẫn trả dữ liệu thành công cho client.
+        redisSetSpan.recordException(redisErr);
+        redisSetSpan.setStatus({ code: SpanStatusCode.ERROR, message: redisErr.message });
+        span.addEvent('redis.setex.fallback', { reason: redisErr.message });
+      } finally {
+        redisSetSpan.end();
+      }
 
+      span.setStatus({ code: SpanStatusCode.OK });
       span.end();
       res.json(grpcResponse);
     } catch (err) {
@@ -260,5 +304,5 @@ app.listen(PORT, () => {
   console.log(`API Gateway đang chạy tại: http://localhost:${PORT}`);
   console.log(`Jaeger Tracing UI: http://localhost:16686`);
   console.log(`Load Balancing: Round Robin (2 instances)`);
-  console.log(`Caching: In-memory (TTL: 60s)`);
+  console.log(`Caching: Redis Distributed Cache (TTL: ${CONFIG.cacheTTLSeconds}s)`);
 });

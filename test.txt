@@ -1,55 +1,72 @@
+# ==================================================
+# DEMO SCRIPT END-TO-END: API GATEWAY + REDIS + JAEGER
+# File này dùng để demo toàn bộ project từ đầu tới cuối.
+# ==================================================
+
+# --------------------------------------------------
+# 0) Khởi động lại sạch sẽ (khuyến nghị trước khi demo)
+# --------------------------------------------------
 npm run docker:clean-up
 
-# 1. Dừng và xóa toàn bộ container, network trong file compose
-docker-compose down -v
+# Nếu muốn chạy thủ công:
+# docker-compose down -v
+# docker-compose up --build
 
-# 2. Build lại docker
-docker-compose up --build
+# Mở Jaeger UI:
+# http://localhost:16686
 
-Lệnh tích hợp: kill port, docker up, docker down
-npm run docker:clean-up
+# --------------------------------------------------
+# 1) Kiểm tra health hệ thống nhanh
+# --------------------------------------------------
+curl -i http://localhost:3000
 
-================================================== demo
-
-1: ĐIỀU PHỐI LƯU LƯỢNG (ROUTING & LOAD BALANCING)
-#gọi 2 lần và Nhìn vào Log của Gateway, bạn sẽ thấy [LB] Điều hướng tới Instance: ...:3001 và sau đó là :3011.
-
+# --------------------------------------------------
+# 2) Demo Load Balancing (Round Robin) - User Service
+# --------------------------------------------------
+# Gọi 2-3 lần, quan sát log gateway:
+# [LB] Điều hướng tới Instance: http://user-service:3001
+# [LB] Điều hướng tới Instance: http://user-service-2:3001
+curl -H "Authorization: Bearer secret-token" http://localhost:3000/api/users
+curl -H "Authorization: Bearer secret-token" http://localhost:3000/api/users
 curl -H "Authorization: Bearer secret-token" http://localhost:3000/api/users
 
-2: TỐI ƯU HIỆU NĂNG (IN-MEMORY CACHING)
-#Thời gian time_total ở lần 2 sẽ gần như bằng 0. Log Gateway sẽ hiện: [Cache] Trả về dữ liệu từ bộ nhớ....
+# --------------------------------------------------
+# 3) Demo Redis Cache-Aside cho /api/products
+# --------------------------------------------------
+# Lần 1: cache miss -> gateway gọi gRPC Product Service -> ghi Redis (setex)
 
-curl -w "\nTime: %{time_total}s\n" -H "Authorization: Bearer secret-token" "http://localhost:3000/api/products?page=1"
+# Lần 2: cache hit -> gateway đọc Redis (get) và trả nhanh hơn
+curl -w "\nTime: %{time_total}s\n" -H "Authorization: Bearer secret-token" "http://localhost:3000/api/products?page=1&pageSize=10"
 
-3. test rate limit (lấy danh sách quá 5 lần trong 10s)
-#Gõ lệnh liên tục trên 5 lần
+# Gợi ý quan sát Jaeger:
+# - Span cha: gateway.listProducts
+# - Span con Redis: gateway.redis.get, gateway.redis.setex
 
+
+# --------------------------------------------------
+# 4) Demo Rate Limit (10 request / 10 giây)
+# --------------------------------------------------
+# Gọi nhanh liên tục >10 lần trong 10 giây, sẽ nhận 429
 curl -H "Authorization: Bearer secret-token" http://localhost:3000/api/users
 
-4. Kịch bản: Mua hàng THÀNH CÔNG (Full Flow)
-#Kịch bản này dùng để show luồng chạy hoàn hảo qua 4 service.
-#Mục tiêu: Jaeger hiện màu xanh toàn bộ, thấy được gRPC (Product) và REST (User, Order).
+# --------------------------------------------------
+# 5) Demo luồng chính /api/checkout (Scatter-Gather Happy Path)
+# --------------------------------------------------
+# Scatter:
+# - Nhánh A: GET user qua REST (có round-robin)
+# - Nhánh B: checkStock qua gRPC cho từng cart item
+# Gather:
+# - Tổng hợp kết quả -> gọi Order Service tạo đơn
+curl -X POST http://localhost:3000/api/checkout -H "Authorization: Bearer secret-token" -H "Content-Type: application/json" -d "{\"userId\":\"user-001\",\"cartItems\":[{\"productId\":\"prod-001\",\"quantity\":1}],\"shippingAddress\":\"Hanoi\",\"paymentMethod\":\"COD\"}"
 
-curl -X POST http://localhost:3000/api/checkout ^
-  -H "Authorization: Bearer secret-token" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"userId\":\"user-001\",\"cartItems\":[{\"productId\":\"prod-001\",\"quantity\":1}],\"shippingAddress\":\"Hanoi\",\"paymentMethod\":\"COD\"}"
+# Kỳ vọng:
+# - HTTP 201
+# - Jaeger hiển thị flow xanh qua Gateway -> User/Product -> Order
 
-5. Kịch bản: Bảo mật tối ưu (Chặn tại Gateway)
-#Mục tiêu: Show khả năng bảo vệ của Gateway. Jaeger chỉ hiện 1 Span đỏ duy nhất.
-#Giải thích: "Hệ thống phát hiện token sai ngay tại cửa ngõ, không cho phép request lọt vào bên trong."
 
-curl -i -X POST http://localhost:3000/api/checkout ^
-  -H "x-auth-mode: gateway" ^
-  -H "Authorization: Bearer token-fake" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"userId\":\"user-001\",\"cartItems\":[{\"productId\":\"prod-001\",\"quantity\":1}]}"
-
-6. Kịch bản: Bảo mật phân tán (Chặn sâu tại Service)
-#Mục tiêu: Show request đi xuyên qua Gateway (Xanh) nhưng bị User Service chặn (Đỏ).
-
-curl -i -X POST http://localhost:3000/api/checkout ^
-  -H "x-auth-mode: service" ^
-  -H "Authorization: Bearer token-fake" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"userId\":\"user-001\",\"cartItems\":[{\"productId\":\"prod-001\",\"quantity\":1}]}"
+# --------------------------------------------------
+# 6) Demo Security - Chặn tại Gateway (x-auth-mode: gateway)
+# --------------------------------------------------
+# Token sai bị chặn ngay tại gateway.
+# Kỳ vọng: HTTP 401, Jaeger thường chỉ thấy span đỏ phía gateway auth check.
+curl -X POST http://localhost:3000/api/checkout -H "x-auth-mode: gateway" -H "Authorization: Bearer token-fake" -H "Content-Type: application/json" -d "{\"userId\":\"user-001\",\"cartItems\":[{\"productId\":\"prod-001\",\"quantity\":1}]}"
